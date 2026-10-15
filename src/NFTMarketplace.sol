@@ -24,12 +24,26 @@ contract NFTMarketplace is Ownable, ReentrancyGuard {
     /// @dev NFT contract address => token ID => listing.
     mapping(address => mapping(uint256 => Listing)) listings;
 
+    /// @notice Maximum fee the owner can set, in basis points (500 = 5%).
+    uint256 public constant MAX_FEE_BPS = 500;
+    uint256 private constant BPS_DENOMINATOR = 10_000;
+
+    /// @notice Marketplace fee in basis points (50 = 0.5%), charged to the seller on each sale.
+    uint256 public feeBps = 50;
+
+    /// @notice Fees collected from sales and not yet withdrawn by the owner, in wei.
+    uint256 public accumulatedFees;
+
     /// @notice Emitted when an NFT is listed for sale.
     event NFTListed(address indexed seller, address indexed nftAddress, uint256 indexed tokenId, uint256 price);
     /// @notice Emitted when a listing is cancelled by its seller.
     event NFTUnlisted(address indexed seller, address indexed nftAddress, uint256 indexed tokenId);
     /// @notice Emitted when a listed NFT is bought.
-    event NFTSold(address indexed buyer, address indexed seller, address indexed nftAddress, uint256 tokenId, uint256 price);
+    event NFTSold(address indexed buyer, address indexed seller, address indexed nftAddress, uint256 tokenId, uint256 price, uint256 fee);
+    /// @notice Emitted when the owner updates the marketplace fee.
+    event FeeUpdated(uint256 oldFeeBps, uint256 newFeeBps);
+    /// @notice Emitted when the owner withdraws the accumulated fees.
+    event FeesWithdrawn(address indexed to, uint256 amount);
 
     /// @dev The listing price is zero.
     error NFTMarketplace__PriceZero();
@@ -43,6 +57,10 @@ contract NFTMarketplace is Ownable, ReentrancyGuard {
     error NFTMarketplace__PriceNotValid();
     /// @dev The ETH transfer to the seller failed.
     error NFTMarketplace__TransferFailed();
+    /// @dev The requested fee exceeds MAX_FEE_BPS.
+    error NFTMarketplace__FeeTooHigh();
+    /// @dev There are no accumulated fees to withdraw.
+    error NFTMarketplace__NoFeesToWithdraw();
 
     constructor() Ownable(msg.sender) {}
 
@@ -80,8 +98,9 @@ contract NFTMarketplace is Ownable, ReentrancyGuard {
     }
 
     /// @notice Buys a listed NFT by sending the exact listing price in ETH.
-    /// @dev Follows checks-effects-interactions: the listing is deleted before the NFT and ETH
-    /// are transferred. Protected against reentrancy.
+    /// @dev Follows checks-effects-interactions: the listing is deleted and the fee accounted for
+    /// before the NFT and ETH are transferred. The fee (feeBps) is deducted from the seller's
+    /// proceeds, so the buyer always pays exactly the listing price. Protected against reentrancy.
     /// @param nftAddress_ Address of the ERC721 contract.
     /// @param tokenId_ ID of the token to buy.
     function buyNFT(address nftAddress_, uint256 tokenId_) external payable nonReentrant {
@@ -90,13 +109,40 @@ contract NFTMarketplace is Ownable, ReentrancyGuard {
         if (listing_.price == 0) revert NFTMarketplace__ListingNotExists();
         if (listing_.price != msg.value) revert NFTMarketplace__PriceNotValid();
 
+        uint256 fee = (listing_.price * feeBps) / BPS_DENOMINATOR;
+
         delete listings[nftAddress_][tokenId_];
+        accumulatedFees += fee;
 
         IERC721(nftAddress_).safeTransferFrom(listing_.seller, msg.sender, tokenId_);
 
-        (bool success,) = listing_.seller.call{value: listing_.price}("");
+        (bool success,) = listing_.seller.call{value: listing_.price - fee}("");
         if (!success) revert NFTMarketplace__TransferFailed();
 
-        emit NFTSold(msg.sender, listing_.seller, nftAddress_, tokenId_, listing_.price);
+        emit NFTSold(msg.sender, listing_.seller, nftAddress_, tokenId_, listing_.price, fee);
+    }
+
+    /// @notice Updates the marketplace fee.
+    /// @dev Applies to every sale made after the change, including already active listings.
+    /// @param newFeeBps_ New fee in basis points. Must not exceed MAX_FEE_BPS.
+    function setFee(uint256 newFeeBps_) external onlyOwner {
+        if (newFeeBps_ > MAX_FEE_BPS) revert NFTMarketplace__FeeTooHigh();
+
+        emit FeeUpdated(feeBps, newFeeBps_);
+        feeBps = newFeeBps_;
+    }
+
+    /// @notice Withdraws all accumulated fees to the owner.
+    /// @dev Pull pattern: fees are never sent during a purchase, so a failing owner can't block sales.
+    function withdrawFees() external onlyOwner nonReentrant {
+        uint256 amount = accumulatedFees;
+        if (amount == 0) revert NFTMarketplace__NoFeesToWithdraw();
+
+        accumulatedFees = 0;
+
+        (bool success,) = msg.sender.call{value: amount}("");
+        if (!success) revert NFTMarketplace__TransferFailed();
+
+        emit FeesWithdrawn(msg.sender, amount);
     }
 }
