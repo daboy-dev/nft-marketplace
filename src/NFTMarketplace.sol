@@ -22,7 +22,7 @@ contract NFTMarketplace is Ownable, ReentrancyGuard {
     }
 
     /// @dev NFT contract address => token ID => listing.
-    mapping(address => mapping(uint256 => Listing)) listings;
+    mapping(address => mapping(uint256 => Listing)) public listings;
 
     /// @notice Maximum fee the owner can set, in basis points (500 = 5%).
     uint256 public constant MAX_FEE_BPS = 500;
