@@ -4,6 +4,7 @@ pragma solidity ^0.8.34;
 
 import {Test} from "forge-std/Test.sol";
 import {IERC721Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {NFTMarketplace} from "../src/NFTMarketplace.sol";
 import {MockNFT} from "./mocks/MockNFT.sol";
 
@@ -13,6 +14,9 @@ contract NFTMarketplaceTest is Test {
     address deployer = vm.addr(1);
     address user = vm.addr(2);
     uint256 tokenId = 0;
+    address buyer = vm.addr(3);
+    uint256 constant feeTestsPrice = 1 ether;
+    uint256 constant BPS_DENOMINATOR = 10_000;
 
     function setUp() public {
         vm.startPrank(deployer);
@@ -82,7 +86,7 @@ contract NFTMarketplaceTest is Test {
         (, address sellerBefore,,) = nftMarketplace.listings(nftAddress, tokenId);
         assertEq(sellerBefore, user);
 
-        vm.expectEmit(true, true, true, false);
+        vm.expectEmit(true, true, true, false, address(nftMarketplace));
         emit NFTMarketplace.NFTUnlisted(user, nftAddress, tokenId);
         nftMarketplace.unlistNFT(nftAddress, tokenId);
         (address nftListedAddress,,,) = nftMarketplace.listings(nftAddress, tokenId);
@@ -143,5 +147,146 @@ contract NFTMarketplaceTest is Test {
         assertEq(newOwner, deployer);
 
         vm.stopPrank();
+    }
+
+    function test_FeeBps_DefaultsToHalfPercent() public view {
+        assertEq(nftMarketplace.feeBps(), 50);
+    }
+
+    function test_SetFee_UpdatesFeeAndEmitsFeeUpdated() public {
+        uint256 oldFeeBps = nftMarketplace.feeBps();
+        uint256 newFeeBps = 100;
+
+        vm.expectEmit(false, false, false, true, address(nftMarketplace));
+        emit NFTMarketplace.FeeUpdated(oldFeeBps, newFeeBps);
+        vm.prank(deployer);
+        nftMarketplace.setFee(newFeeBps);
+
+        assertEq(nftMarketplace.feeBps(), newFeeBps);
+    }
+
+    function test_RevertIf_SetFeeCallerIsNotOwner() public {
+        vm.prank(user);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, user));
+        nftMarketplace.setFee(100);
+    }
+
+    function test_RevertIf_SetFeeExceedsMax() public {
+        uint256 aboveMaxFeeBps = nftMarketplace.MAX_FEE_BPS() + 1;
+
+        vm.prank(deployer);
+        vm.expectRevert(NFTMarketplace.NFTMarketplace__FeeTooHigh.selector);
+        nftMarketplace.setFee(aboveMaxFeeBps);
+    }
+
+    function test_BuyNFT_SplitsPriceBetweenSellerAndFees() public {
+        uint256 expectedFee = (feeTestsPrice * nftMarketplace.feeBps()) / BPS_DENOMINATOR;
+        _listAndApprove(tokenId, feeTestsPrice);
+
+        _buy(tokenId, feeTestsPrice);
+
+        assertEq(user.balance, feeTestsPrice - expectedFee);
+        assertEq(nftMarketplace.accumulatedFees(), expectedFee);
+        assertEq(address(nftMarketplace).balance, expectedFee);
+        assertEq(buyer.balance, 0);
+    }
+
+    function test_BuyNFT_AppliesUpdatedFee() public {
+        uint256 newFeeBps = 200;
+        uint256 expectedFee = (feeTestsPrice * newFeeBps) / BPS_DENOMINATOR;
+        _listAndApprove(tokenId, feeTestsPrice);
+
+        vm.prank(deployer);
+        nftMarketplace.setFee(newFeeBps);
+        _buy(tokenId, feeTestsPrice);
+
+        assertEq(nftMarketplace.accumulatedFees(), expectedFee);
+        assertEq(user.balance, feeTestsPrice - expectedFee);
+    }
+
+    function test_BuyNFT_AccumulatesFeesAcrossSales() public {
+        uint256 secondTokenId = 1;
+        mockedNFT.mint(user, secondTokenId);
+        _listAndApprove(tokenId, feeTestsPrice);
+        _listAndApprove(secondTokenId, 2 * feeTestsPrice);
+        uint256 expectedFees = (feeTestsPrice * nftMarketplace.feeBps()) / BPS_DENOMINATOR
+            + (2 * feeTestsPrice * nftMarketplace.feeBps()) / BPS_DENOMINATOR;
+
+        _buy(tokenId, feeTestsPrice);
+        _buy(secondTokenId, 2 * feeTestsPrice);
+
+        assertEq(nftMarketplace.accumulatedFees(), expectedFees);
+        assertEq(address(nftMarketplace).balance, expectedFees);
+    }
+
+    function testFuzz_BuyNFT_SplitsPriceBetweenSellerAndFees(uint256 price, uint256 feeBps) public {
+        price = bound(price, 1, 100 ether);
+        feeBps = bound(feeBps, 0, nftMarketplace.MAX_FEE_BPS());
+        uint256 expectedFee = (price * feeBps) / BPS_DENOMINATOR;
+        vm.prank(deployer);
+        nftMarketplace.setFee(feeBps);
+        _listAndApprove(tokenId, price);
+
+        _buy(tokenId, price);
+
+        assertEq(nftMarketplace.accumulatedFees(), expectedFee);
+        assertEq(user.balance, price - expectedFee);
+        assertEq(user.balance + nftMarketplace.accumulatedFees(), price);
+    }
+
+    function test_WithdrawFees_TransfersFeesToOwnerAndEmitsFeesWithdrawn() public {
+        _listAndApprove(tokenId, feeTestsPrice);
+        _buy(tokenId, feeTestsPrice);
+        uint256 fees = nftMarketplace.accumulatedFees();
+
+        vm.expectEmit(true, false, false, true, address(nftMarketplace));
+        emit NFTMarketplace.FeesWithdrawn(deployer, fees);
+        vm.prank(deployer);
+        nftMarketplace.withdrawFees();
+
+        assertEq(deployer.balance, fees);
+        assertEq(nftMarketplace.accumulatedFees(), 0);
+        assertEq(address(nftMarketplace).balance, 0);
+    }
+
+    function test_RevertIf_WithdrawFeesCallerIsNotOwner() public {
+        _listAndApprove(tokenId, feeTestsPrice);
+        _buy(tokenId, feeTestsPrice);
+
+        vm.prank(user);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, user));
+        nftMarketplace.withdrawFees();
+    }
+
+    function test_RevertIf_NoFeesToWithdraw() public {
+        vm.prank(deployer);
+        vm.expectRevert(NFTMarketplace.NFTMarketplace__NoFeesToWithdraw.selector);
+        nftMarketplace.withdrawFees();
+    }
+
+    function test_RevertIf_WithdrawFeesTransferFails() public {
+        _listAndApprove(tokenId, feeTestsPrice);
+        _buy(tokenId, feeTestsPrice);
+
+        address ownerRejectingEth = address(mockedNFT);
+        vm.prank(deployer);
+        nftMarketplace.transferOwnership(ownerRejectingEth);
+
+        vm.prank(ownerRejectingEth);
+        vm.expectRevert(NFTMarketplace.NFTMarketplace__TransferFailed.selector);
+        nftMarketplace.withdrawFees();
+    }
+
+    function _listAndApprove(uint256 id, uint256 price) internal {
+        vm.startPrank(user);
+        nftMarketplace.listNFT(address(mockedNFT), id, price);
+        mockedNFT.approve(address(nftMarketplace), id);
+        vm.stopPrank();
+    }
+
+    function _buy(uint256 id, uint256 price) internal {
+        vm.deal(buyer, price);
+        vm.prank(buyer);
+        nftMarketplace.buyNFT{value: price}(address(mockedNFT), id);
     }
 }
