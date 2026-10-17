@@ -39,7 +39,14 @@ contract NFTMarketplace is Ownable, ReentrancyGuard {
     /// @notice Emitted when a listing is cancelled by its seller.
     event NFTUnlisted(address indexed seller, address indexed nftAddress, uint256 indexed tokenId);
     /// @notice Emitted when a listed NFT is bought.
-    event NFTSold(address indexed buyer, address indexed seller, address indexed nftAddress, uint256 tokenId, uint256 price, uint256 fee);
+    event NFTSold(
+        address indexed buyer,
+        address indexed seller,
+        address indexed nftAddress,
+        uint256 tokenId,
+        uint256 price,
+        uint256 fee
+    );
     /// @notice Emitted when the owner updates the marketplace fee.
     event FeeUpdated(uint256 oldFeeBps, uint256 newFeeBps);
     /// @notice Emitted when the owner withdraws the accumulated fees.
@@ -75,12 +82,8 @@ contract NFTMarketplace is Ownable, ReentrancyGuard {
         address owner = IERC721(nftAddress_).ownerOf(tokenId_);
         if (owner != msg.sender) revert NFTMarketplace__NotTokenOwner();
 
-        listings[nftAddress_][tokenId_] = Listing({
-            nftAddress: nftAddress_,
-            seller: msg.sender,
-            tokenId: tokenId_,
-            price: price_
-        });
+        listings[nftAddress_][tokenId_] =
+            Listing({nftAddress: nftAddress_, seller: msg.sender, tokenId: tokenId_, price: price_});
 
         emit NFTListed(msg.sender, nftAddress_, tokenId_, price_);
     }

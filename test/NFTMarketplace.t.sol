@@ -55,13 +55,13 @@ contract NFTMarketplaceTest is Test {
         vm.startPrank(user);
 
         address nftAddress = address(mockedNFT);
-        (,address beforeSeller,,) = nftMarketplace.listings(nftAddress, tokenId);
+        (, address beforeSeller,,) = nftMarketplace.listings(nftAddress, tokenId);
         assertEq(beforeSeller, address(0));
 
         vm.expectEmit(true, true, true, true, address(nftMarketplace));
         emit NFTMarketplace.NFTListed(user, nftAddress, tokenId, 1);
         nftMarketplace.listNFT(nftAddress, tokenId, 1);
-        (,address afterSeller,,) = nftMarketplace.listings(nftAddress, tokenId);
+        (, address afterSeller,,) = nftMarketplace.listings(nftAddress, tokenId);
         assertEq(afterSeller, user);
 
         vm.stopPrank();
@@ -112,7 +112,7 @@ contract NFTMarketplaceTest is Test {
         vm.startPrank(deployer);
         vm.deal(deployer, 10);
         vm.expectRevert(NFTMarketplace.NFTMarketplace__PriceNotValid.selector);
-        nftMarketplace.buyNFT{ value: price / 2 }(nftAddress, tokenId);
+        nftMarketplace.buyNFT{value: price / 2}(nftAddress, tokenId);
         vm.stopPrank();
     }
 
@@ -125,7 +125,7 @@ contract NFTMarketplaceTest is Test {
         mockedNFT.approve(address(nftMarketplace), tokenId);
         vm.stopPrank();
 
-        (,address sellerAddress,,) = nftMarketplace.listings(nftAddress, tokenId);
+        (, address sellerAddress,,) = nftMarketplace.listings(nftAddress, tokenId);
         assertEq(sellerAddress, user);
 
         vm.startPrank(deployer);
@@ -137,7 +137,7 @@ contract NFTMarketplaceTest is Test {
         vm.expectEmit(true, true, true, true, address(nftMarketplace));
         emit NFTMarketplace.NFTSold(deployer, user, address(mockedNFT), tokenId, price, expectedFee);
 
-        nftMarketplace.buyNFT{ value: price }(nftAddress, tokenId);
+        nftMarketplace.buyNFT{value: price}(nftAddress, tokenId);
         uint256 balanceAfter = address(deployer).balance;
         assertEq(balanceAfter, balanceBefore - price);
 
